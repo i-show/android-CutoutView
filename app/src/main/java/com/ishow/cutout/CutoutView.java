@@ -1,5 +1,6 @@
 package com.ishow.cutout;
 
+import android.animation.ValueAnimator;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -13,6 +14,7 @@ import android.graphics.Path;
 import android.graphics.PathMeasure;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffXfermode;
+import android.graphics.RectF;
 import android.graphics.Shader;
 import android.os.Environment;
 import android.support.annotation.IntDef;
@@ -51,8 +53,19 @@ public class CutoutView extends View {
      * 移动的有效距离
      */
     private static final int EFFECTIVE_MOVE_DISTANCE = 500;
+    /**
+     * 抠图画笔的透明度
+     */
     private static final int TRACK_ALPHA = 100;
 
+    /**
+     * 最大放大倍数
+     */
+    private static final float MAX_ZOOM_SCALE = 2;
+    /**
+     * 缩放的最小倍数
+     */
+    private static final float MIN_ZOOM_SCALE = 0.3f;
 
     /**
      * 动作路径
@@ -72,25 +85,61 @@ public class CutoutView extends View {
     private PorterDuffXfermode mEnlargePorterMode;
     private PorterDuffXfermode mEraserPorterMode;
     private Bitmap mPhotoBitmap;
-    private Bitmap mResultBitmap;
     private Bitmap mEnlargeBgBitmap;
 
-    private boolean mActionTrackVisible;
-    private boolean mEnlargeVisible;
+    private boolean isActionTrackVisible;
+    private boolean isEnlargeVisible;
+    /**
+     * 是否手势操作过
+     */
+    private boolean isGestured;
     private int mMode;
 
     private int mPhotoTop;
     private int mPhotoLeft;
+    private int mPhotoWidth;
+    private int mPhotoHeight;
+    private int mViewWidth;
+    private int mViewHeight;
     /**
      * 放大视图
      */
     private int mEnlargeSize;
+    /**
+     * 多点触控处理
+     */
+    private int mTouchPoint;
     private float[] mDownPoint;
     private float[] mMovePoint;
     private float[] mUpPoint;
+    private float[] mTouchTwoPointCenter;
+    private float[] mDownPointOne;
+    private float[] mDownPointTwo;
+    /**
+     * 缩放的比例
+     */
+    private float mZoomScale;
+    private float mZoomLastScale;
+    /**
+     * 上一次2点之间的距离
+     */
+    private double mLastTwoPointDistance;
+    /**
+     * 移动的距离
+     */
+    private float mTranslateX;
+    private float mTranslateY;
+    private float mTranslateLastX;
+    private float mTranslateLastY;
 
     private List<CutoutRecord> mCutoutRecordList;
     private CutoutRecord mCurrentRecord;
+    private ValueAnimator mZoomAnimator;
+    private ValueAnimator mTranslateXAnimator;
+    private ValueAnimator mTranslateYAnimator;
+
+    private Matrix mMatrix;
+    private RectF mPhotoRectF;
 
     public CutoutView(Context context) {
         super(context);
@@ -109,18 +158,41 @@ public class CutoutView extends View {
 
     private void init() {
         setLayerType(View.LAYER_TYPE_SOFTWARE, null);
+        mMatrix = new Matrix();
+        mPhotoRectF = new RectF();
+
         mMode = Mode.CUT_OUT;
 
         mCutoutRecordList = new ArrayList<>();
         mDownPoint = new float[2];
         mMovePoint = new float[2];
         mUpPoint = new float[2];
+        mTouchTwoPointCenter = new float[2];
+        mDownPointOne = new float[2];
+        mDownPointTwo = new float[2];
 
+        mZoomScale = 1.0f;
+        mZoomLastScale = 1.0f;
+        mTranslateX = 0f;
+        mTranslateY = 0f;
 
         mPhotoPaint = new Paint();
         mPhotoPaint.setDither(true);
         mPhotoPaint.setAntiAlias(true);
         mPhotoPaint.setStyle(Paint.Style.FILL);
+
+        mZoomAnimator = ValueAnimator.ofFloat();
+        mZoomAnimator.setDuration(500);
+        mZoomAnimator.addUpdateListener(mZoomAniListener);
+
+
+        mTranslateXAnimator = ValueAnimator.ofFloat();
+        mTranslateXAnimator.setDuration(500);
+        mTranslateXAnimator.addUpdateListener(mTranslateXAniListener);
+
+        mTranslateYAnimator = ValueAnimator.ofFloat();
+        mTranslateYAnimator.setDuration(500);
+        mTranslateYAnimator.addUpdateListener(mTranslateYAniListener);
 
         // 透明背景
         Bitmap transparentBitmap = BitmapFactory.decodeResource(getResources(), R.drawable.imitate_transparent_bg_piece);
@@ -157,36 +229,64 @@ public class CutoutView extends View {
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
-        switch (event.getAction()) {
+        switch (event.getAction() & MotionEvent.ACTION_MASK) {
             case MotionEvent.ACTION_DOWN:
-                mEnlargeVisible = true;
+                mTouchPoint = 1;
+                isEnlargeVisible = true;
+                isGestured = false;
+
                 if (mMode == Mode.CUT_OUT) {
                     onCutoutDown(event);
                 } else {
                     onEraserDown(event);
                 }
+                break;
+            case MotionEvent.ACTION_POINTER_DOWN:
+                mLastTwoPointDistance = getTouchPointDistance(event);
+                mTouchPoint += 1;
+                isEnlargeVisible = false;
+                isGestured = true;
 
+                mDownPointOne[0] = event.getX(0);
+                mDownPointOne[1] = event.getY(0);
+                mDownPointTwo[0] = event.getX(1);
+                mDownPointTwo[1] = event.getY(1);
                 break;
             case MotionEvent.ACTION_MOVE:
                 mMovePoint[0] = event.getX();
                 mMovePoint[1] = event.getY();
 
-                if (mMode == Mode.CUT_OUT) {
-                    onCutoutMove(event);
-                } else {
-                    onEraserMove(event);
+                if (mTouchPoint >= 2) {
+                    onGestureMove(event);
+                } else if (!isGestured) { // 手势操作后不能进行其他操作
+                    if (mMode == Mode.CUT_OUT) {
+                        onCutoutMove(event);
+                    } else {
+                        onEraserMove(event);
+                    }
                 }
 
                 break;
+            case MotionEvent.ACTION_POINTER_UP:
+                mTouchPoint -= 1;
+                if (mTouchPoint <= 1) {
+                    onGestureUp(event);
+                }
+                break;
+
             case MotionEvent.ACTION_UP:
-                mEnlargeVisible = false;
-                if (mMode == Mode.CUT_OUT) {
-                    onCutoutUp(event);
-                } else {
-                    onEraserUp(event);
+                mTouchPoint = 0;
+                isEnlargeVisible = false;
+                // 手势操作后不能进行其他操作
+                if (!isGestured) {
+                    if (mMode == Mode.CUT_OUT) {
+                        onCutoutUp(event);
+                    } else {
+                        onEraserUp(event);
+                    }
                 }
-
                 break;
+
         }
         postInvalidate();
         return true;
@@ -195,6 +295,11 @@ public class CutoutView extends View {
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         super.onSizeChanged(w, h, oldw, oldh);
+
+
+        mViewWidth = w;
+        mViewHeight = h;
+
         mEnlargeSize = w / 4;
         createEnlargeBgBitmap();
         computePhotoInfo();
@@ -207,6 +312,11 @@ public class CutoutView extends View {
         if (mPhotoBitmap == null || mPhotoBitmap.isRecycled()) {
             return;
         }
+        canvas.save();
+
+        mMatrix.setTranslate(mTranslateX, mTranslateY);
+        mMatrix.preScale(mZoomScale, mZoomScale, mTouchTwoPointCenter[0], mTouchTwoPointCenter[1]);
+        canvas.setMatrix(mMatrix);
 
         /*
          * 画仿透明的背景
@@ -218,61 +328,54 @@ public class CutoutView extends View {
                 mPhotoTop + mPhotoBitmap.getHeight(),
                 mTransparentPaint);
 
+        canvas.drawBitmap(mPhotoBitmap, mPhotoLeft, mPhotoTop, mPhotoPaint);
 
-        if (mResultBitmap != null && !mResultBitmap.isRecycled()) {
-            canvas.drawBitmap(mResultBitmap, mPhotoLeft, mPhotoTop, mPhotoPaint);
-        } else {
-            canvas.drawBitmap(mPhotoBitmap, mPhotoLeft, mPhotoTop, mPhotoPaint);
-        }
-
-        if (mActionTrackVisible) {
+        if (isActionTrackVisible) {
             canvas.drawPath(mCurrentPath, mActionPaint);
         }
+        canvas.restore();
 
         drawEnlarge(canvas);
 
     }
 
     private void drawEnlarge(Canvas canvas) {
-        if (!mEnlargeVisible || mEnlargeBgBitmap == null) {
+        if (!isEnlargeVisible || mEnlargeBgBitmap == null) {
             return;
         }
-        final int x = mEnlargeSize / 2;
+        final int left;
+        final float effect = mEnlargeSize * 1.2f;
+        if (mMovePoint[0] < effect && mMovePoint[1] < effect) {
+            left = getMeasuredWidth() - mEnlargeSize;
+        } else {
+            left = 0;
+        }
+        final int x = left + mEnlargeSize / 2;
         final int y = mEnlargeSize / 2;
         final float moveX = x - mMovePoint[0] + mPhotoLeft;
         final float moveY = y - mMovePoint[1] + mPhotoTop;
 
         canvas.drawRect(
+                left,
                 0,
-                0,
-                mEnlargeSize,
+                left + mEnlargeSize,
                 mEnlargeSize,
                 mTransparentPaint);
 
+
+        Bitmap bitmap = getEnlargeResultBitmap();
         int saveCount = canvas.saveLayer(0, 0, getWidth(), getHeight(), null, Canvas.ALL_SAVE_FLAG);
         mPhotoPaint.setXfermode(null);
-        canvas.drawBitmap(mEnlargeBgBitmap, 0, 0, mPhotoPaint);
+        canvas.drawBitmap(mEnlargeBgBitmap, left, 0, mPhotoPaint);
         mPhotoPaint.setXfermode(mEnlargePorterMode);
-
-        if (mResultBitmap == null) {
-            canvas.drawBitmap(mPhotoBitmap, moveX, moveY, mPhotoPaint);
-        } else {
-            canvas.drawBitmap(mResultBitmap, moveX, moveY, mPhotoPaint);
-        }
+        canvas.drawBitmap(bitmap, moveX, moveY, mPhotoPaint);
         mPhotoPaint.setXfermode(null);
         canvas.restoreToCount(saveCount);
 
-        saveCount = canvas.saveLayer(0, 0, getWidth(), getHeight(), null, Canvas.ALL_SAVE_FLAG);
-        canvas.translate(x - mMovePoint[0], y - mMovePoint[1]);
-        if (mActionTrackVisible) {
-            canvas.drawPath(mCurrentPath, mActionPaint);
-        }
+        canvas.drawRect(left, 0, left + mEnlargeSize, mEnlargeSize, mEnlargePaint);
+        canvas.drawCircle(x, y, 15, mEnlargePaint);
 
-        canvas.restoreToCount(saveCount);
-
-
-        canvas.drawRect(0, 0, mEnlargeSize, mEnlargeSize, mEnlargePaint);
-        canvas.drawCircle(mEnlargeSize / 2, mEnlargeSize / 2, 15, mEnlargePaint);
+        recycleBitmap(bitmap);
 
     }
 
@@ -280,7 +383,7 @@ public class CutoutView extends View {
      * 抠图按下操作
      */
     private void onCutoutDown(MotionEvent event) {
-        mActionTrackVisible = true;
+        isActionTrackVisible = true;
         mActionPaint.setAlpha(TRACK_ALPHA);
         // 如果之前是closed 就重置
         if (mPathMeasure.getLength() == 0 || mPathMeasure.isClosed()) {
@@ -323,7 +426,7 @@ public class CutoutView extends View {
      * 橡皮擦按下操作
      */
     private void onEraserDown(MotionEvent event) {
-        mActionTrackVisible = false;
+        isActionTrackVisible = false;
         mActionPaint.setAlpha(255);
         mCurrentPath.reset();
         mCurrentPath.moveTo(event.getX(), event.getY());
@@ -331,28 +434,150 @@ public class CutoutView extends View {
 
     private void onEraserMove(MotionEvent event) {
         mCurrentPath.lineTo(event.getX(), event.getY());
-        mResultBitmap = getEraserResultBitmap();
+        mPhotoBitmap = getEraserResultBitmap();
     }
 
+    @SuppressWarnings("UnusedParameters")
     private void onEraserUp(MotionEvent event) {
         mCurrentRecord.addPath(mCurrentPath);
         mCurrentPath = new Path();
         notifyCanBack();
     }
 
-    private Bitmap getEraserResultBitmap() {
-        if (mResultBitmap == null || mResultBitmap.isRecycled()) {
-            mResultBitmap = mPhotoBitmap;
+    private void onGestureMove(MotionEvent event) {
+        double nowDistance = getTouchPointDistance(event);
+        mTouchTwoPointCenter[0] = event.getX(0) + (event.getX(1) - event.getX(0)) / 2;
+        mTouchTwoPointCenter[1] = event.getY(0) + (event.getY(1) - event.getY(0)) / 2;
+
+        mTranslateX = mTranslateLastX + Math.min(event.getX(0) - mDownPointOne[0], event.getX(1) - mDownPointTwo[0]);
+        mTranslateY = mTranslateLastY + Math.min(event.getY(0) - mDownPointOne[1], event.getY(1) - mDownPointTwo[1]);
+
+        final float scale = (float) (nowDistance / mLastTwoPointDistance);
+        mZoomScale = mZoomLastScale + (scale - 1);
+        mZoomScale = Math.max(mZoomScale, MIN_ZOOM_SCALE);
+    }
+
+
+    @SuppressWarnings("UnusedParameters")
+    private void onGestureUp(MotionEvent event) {
+        isGestured = true;
+        mZoomLastScale = mZoomScale;
+        mTranslateLastX = mTranslateX;
+        mTranslateLastY = mTranslateY;
+
+        if (mZoomScale > 1) {
+            onGestureZoomin(event);
+        } else {
+            onGestureZoomOut(event);
         }
+    }
+
+
+    /**
+     * 放大
+     */
+    @SuppressWarnings("UnusedParameters")
+    private void onGestureZoomin(MotionEvent event) {
+        final float scale;
+        if (mZoomScale > MAX_ZOOM_SCALE) {
+            scale = MAX_ZOOM_SCALE;
+            mZoomAnimator.setFloatValues(mZoomLastScale, MAX_ZOOM_SCALE);
+            mZoomAnimator.start();
+        } else {
+            scale = mZoomScale;
+        }
+
+        resetPhotoRectF();
+        Matrix matrix = new Matrix();
+        matrix.setTranslate(mTranslateX, mTranslateY);
+        matrix.preScale(scale, scale, mTouchTwoPointCenter[0], mTouchTwoPointCenter[1]);
+        matrix.mapRect(mPhotoRectF);
+
+        final float photoWidth = mPhotoRectF.width();
+        final float photoHeight = mPhotoRectF.height();
+        if (photoWidth > mViewWidth) {
+            // 左移
+            if (mPhotoRectF.right < mViewWidth) {
+                final float result = mTranslateX + (mViewWidth - mPhotoRectF.right);
+                mTranslateXAnimator.setFloatValues(mTranslateX, result);
+                mTranslateXAnimator.start();
+            } else if (mPhotoRectF.left > 0) {
+                final float result = mTranslateX - mPhotoRectF.left;
+                mTranslateXAnimator.setFloatValues(mTranslateX, result);
+                mTranslateXAnimator.start();
+            }
+        } else {
+                /*
+                 * 1. (mViewWidth - viewWidth) / 2      单侧移动的了多少距离
+                 * 2. (mPhotoRectF.left - (mViewWidth - viewWidth) / 2    需要移动的距离
+                 * 3. mTranslateX - (mPhotoRectF.left - (mViewWidth - viewWidth) / 2) 最终的距离
+                 */
+            final float result = mTranslateX - (mPhotoRectF.left - (mViewWidth - photoWidth) / 2);
+            Log.i(TAG, "onGestureUp: result = " + result);
+            mTranslateXAnimator.setFloatValues(mTranslateX, result);
+            mTranslateXAnimator.start();
+        }
+
+        if (photoHeight > mViewHeight) {
+            // 上移
+            if (mPhotoRectF.top > 0) {
+                final float result = mTranslateY - mPhotoRectF.top;
+                mTranslateYAnimator.setFloatValues(mTranslateY, result);
+                mTranslateYAnimator.start();
+            } else if (mPhotoRectF.bottom < mViewHeight) {
+                final float result = mTranslateY + (mViewHeight - mPhotoRectF.bottom);
+                mTranslateYAnimator.setFloatValues(mTranslateY, result);
+                mTranslateYAnimator.start();
+            }
+        } else {
+                /*
+                 * 同X
+                 */
+            final float result = mTranslateY - (mPhotoRectF.top - (mViewHeight - photoHeight) / 2);
+            mTranslateYAnimator.setFloatValues(mTranslateY, result);
+            mTranslateYAnimator.start();
+        }
+
+    }
+
+    /**
+     * 缩小
+     */
+    @SuppressWarnings("UnusedParameters")
+    private void onGestureZoomOut(MotionEvent event) {
+        mZoomAnimator.setFloatValues(mZoomLastScale, 1);
+        mZoomAnimator.start();
+        mTranslateXAnimator.setFloatValues(mTranslateX, 0);
+        mTranslateXAnimator.start();
+        mTranslateYAnimator.setFloatValues(mTranslateY, 0);
+        mTranslateYAnimator.start();
+    }
+
+    private Bitmap getEraserResultBitmap() {
+
         Bitmap bitmap = Bitmap.createBitmap(mPhotoBitmap.getWidth(), mPhotoBitmap.getHeight(), Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(bitmap);
         mPhotoPaint.setXfermode(null);
-        canvas.drawBitmap(mResultBitmap, 0, 0, mPhotoPaint);
+        canvas.drawBitmap(mPhotoBitmap, 0, 0, mPhotoPaint);
         mPhotoPaint.setXfermode(mEraserPorterMode);
         canvas.drawBitmap(getEraserPathBitmap(), 0, 0, mPhotoPaint);
         mPhotoPaint.setXfermode(null);
         return bitmap;
     }
+
+    private Bitmap getEnlargeResultBitmap() {
+        Bitmap bitmap = Bitmap.createBitmap(mPhotoBitmap.getWidth(), mPhotoBitmap.getHeight(), Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(bitmap);
+        canvas.drawBitmap(mPhotoBitmap, 0, 0, mPhotoPaint);
+        if (mMode == Mode.CUT_OUT) {
+            int saveCount = canvas.saveLayer(0, 0, mPhotoBitmap.getWidth(), mPhotoBitmap.getHeight(), null, Canvas.ALL_SAVE_FLAG);
+            canvas.translate(-mPhotoLeft, -mPhotoTop);
+            canvas.drawPath(mCurrentPath, mActionPaint);
+            canvas.restoreToCount(saveCount);
+        }
+        return bitmap;
+    }
+
 
     /**
      * 获取路径Bitmap
@@ -416,34 +641,47 @@ public class CutoutView extends View {
     }
 
     /**
+     * 获取 距离
+     */
+    private double getTouchPointDistance(MotionEvent event) {
+        float x = event.getX(0) - event.getX(1);
+        float y = event.getY(0) - event.getY(1);
+        return Math.sqrt(x * x + y * y);
+    }
+
+    /**
      * 计算图片相关信息
      */
     private void computePhotoInfo() {
-        final int viewWidth = getMeasuredWidth();
-        final int viewHeight = getMeasuredHeight();
-        if (mPhotoBitmap == null || viewHeight == 0 || viewWidth == 0) {
+        // 当是第二张的时候不需要处理
+        if (mCutoutRecordList.size() > 1) {
+            return;
+        }
+
+        if (mPhotoBitmap == null || mViewHeight == 0 || mViewWidth == 0) {
             return;
         }
 
         final int width = mPhotoBitmap.getWidth();
         final int height = mPhotoBitmap.getHeight();
-        final float widthScale = ((float) viewWidth / width);
-        final float heightScale = ((float) viewHeight / height);
+        final float widthScale = ((float) mViewWidth / width);
+        final float heightScale = ((float) mViewHeight / height);
 
         Matrix matrix = new Matrix();
         final float scale = Math.min(widthScale, heightScale);
         if (widthScale <= heightScale) {
             mPhotoLeft = 0;
-            mPhotoTop = (int) ((viewHeight - height * scale) / 2);
+            mPhotoTop = (int) ((mViewHeight - height * scale) / 2);
         } else {
+            mPhotoLeft = (int) ((mViewWidth - width * scale) / 2);
             mPhotoTop = 0;
-            mPhotoLeft = (int) ((viewWidth - width * scale) / 2);
         }
         matrix.postScale(scale, scale);
 
         Bitmap bitmap = mPhotoBitmap;
         mPhotoBitmap = Bitmap.createBitmap(bitmap, 0, 0, width, height, matrix, true);
-
+        mPhotoWidth = mPhotoBitmap.getWidth();
+        mPhotoHeight = mPhotoBitmap.getHeight();
     }
 
     public void setMode(@Mode int mode) {
@@ -454,7 +692,7 @@ public class CutoutView extends View {
         mMode = mode;
         if (mode == Mode.ERASER && mCurrentRecord != null) {
             mCurrentRecord.clearPointList();
-            mActionTrackVisible = false;
+            isActionTrackVisible = false;
             notifyCanBack();
             postInvalidate();
         } else if (mode == Mode.CUT_OUT) {
@@ -477,10 +715,6 @@ public class CutoutView extends View {
         mCutoutRecordList.add(record);
         mCurrentRecord = record;
 
-        if (mResultBitmap != null) {
-            mResultBitmap.recycle();
-            mResultBitmap = null;
-        }
 
         mPhotoBitmap = BitmapFactory.decodeFile(path);
         computePhotoInfo();
@@ -492,25 +726,27 @@ public class CutoutView extends View {
         @Override
         public void run() {
             notifyShowLoading();
-            if (mResultBitmap == null || mResultBitmap.isRecycled()) {
-                mResultBitmap = mPhotoBitmap;
-            }
+
             Bitmap bitmap = Bitmap.createBitmap(mPhotoBitmap.getWidth(), mPhotoBitmap.getHeight(), Bitmap.Config.ARGB_8888);
+            Bitmap pathBitmap = getPathBitmap();
+
             Canvas canvas = new Canvas(bitmap);
             mPhotoPaint.setXfermode(null);
-            canvas.drawBitmap(mResultBitmap, 0, 0, mPhotoPaint);
+            canvas.drawBitmap(mPhotoBitmap, 0, 0, mPhotoPaint);
             mPhotoPaint.setXfermode(mCutoutPorterMode);
-            canvas.drawBitmap(getPathBitmap(), 0, 0, mPhotoPaint);
+            canvas.drawBitmap(pathBitmap, 0, 0, mPhotoPaint);
             mPhotoPaint.setXfermode(null);
-            mResultBitmap = bitmap;
+
+            recycleBitmap(pathBitmap);
+            recycleBitmap(mPhotoBitmap);
             mPhotoBitmap = bitmap;
-            mActionTrackVisible = false;
+
+            isActionTrackVisible = false;
 
             String path = saveResult(false);
             CutoutRecord record = new CutoutRecord();
             record.setImagePath(path);
             mCutoutRecordList.add(record);
-
             mCurrentRecord = record;
 
             notifyCanBack();
@@ -554,11 +790,6 @@ public class CutoutView extends View {
         mCutoutRecordList.remove(last);
         mCurrentRecord = mCutoutRecordList.get(last - 1);
         mPhotoBitmap = BitmapFactory.decodeFile(mCurrentRecord.getImagePath());
-        if (mResultBitmap != null) {
-            mResultBitmap.recycle();
-            mResultBitmap = null;
-        }
-
 
         if (size == 2) {
             computePhotoInfo();
@@ -578,20 +809,26 @@ public class CutoutView extends View {
 
     private void backPath(List<Path> pathList) {
         final int size = pathList.size();
+        recycleBitmap(mPhotoBitmap);
+        mPhotoBitmap = BitmapFactory.decodeFile(mCurrentRecord.getImagePath());
+        computePhotoInfo();
         if (size == 1) {
             pathList.clear();
-            mResultBitmap = mPhotoBitmap;
             notifyCanBack();
         } else {
             pathList.remove(pathList.size() - 1);
+            Bitmap pathBitmap = getEraserPathBitmap(pathList);
             Bitmap bitmap = Bitmap.createBitmap(mPhotoBitmap.getWidth(), mPhotoBitmap.getHeight(), Bitmap.Config.ARGB_8888);
             Canvas canvas = new Canvas(bitmap);
             mPhotoPaint.setXfermode(null);
             canvas.drawBitmap(mPhotoBitmap, 0, 0, mPhotoPaint);
             mPhotoPaint.setXfermode(mEraserPorterMode);
-            canvas.drawBitmap(getEraserPathBitmap(pathList), 0, 0, mPhotoPaint);
+            canvas.drawBitmap(pathBitmap, 0, 0, mPhotoPaint);
             mPhotoPaint.setXfermode(null);
-            mResultBitmap = bitmap;
+
+            recycleBitmap(mPhotoBitmap);
+            recycleBitmap(pathBitmap);
+            mPhotoBitmap = bitmap;
         }
 
         postInvalidate();
@@ -620,33 +857,27 @@ public class CutoutView extends View {
     /**
      * 保存图片
      */
+    @SuppressWarnings("unused")
     public String saveResult() {
         return saveResult(true);
     }
 
 
     private String saveResult(boolean recycle) {
-        if (mResultBitmap == null) {
-            mResultBitmap = mPhotoBitmap;
-        }
+
         File cache = generateRandomPhotoFile(getContext());
         try {
             FileOutputStream out = new FileOutputStream(cache);
-            mResultBitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
+            mPhotoBitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
             out.flush();
             out.close();
             Log.e(TAG, cache.getAbsolutePath());
             return cache.getAbsolutePath();
         } catch (Exception e) {
-            // TODO Auto-generated catch block
             e.printStackTrace();
             return "";
         } finally {
             if (recycle) {
-                if (mResultBitmap != null) {
-                    mResultBitmap.recycle();
-                    mResultBitmap = null;
-                }
 
                 if (mPhotoBitmap != null) {
                     mPhotoBitmap.recycle();
@@ -735,6 +966,47 @@ public class CutoutView extends View {
         return StringUtils.plusString(cacheFolder.getAbsolutePath(), File.separator, name);
     }
 
+
+    private void recycleBitmap(Bitmap bitmap) {
+        if (bitmap != null) {
+            bitmap.recycle();
+        }
+
+    }
+
+    private void resetPhotoRectF() {
+        mPhotoRectF.left = mPhotoLeft;
+        mPhotoRectF.top = mPhotoTop;
+        mPhotoRectF.right = mPhotoRectF.left + mPhotoWidth;
+        mPhotoRectF.bottom = mPhotoRectF.top + mPhotoHeight;
+    }
+
+    private ValueAnimator.AnimatorUpdateListener mZoomAniListener = new ValueAnimator.AnimatorUpdateListener() {
+        @Override
+        public void onAnimationUpdate(ValueAnimator animation) {
+            mZoomScale = (float) animation.getAnimatedValue();
+            mZoomLastScale = mZoomScale;
+            postInvalidate();
+        }
+    };
+
+    private ValueAnimator.AnimatorUpdateListener mTranslateXAniListener = new ValueAnimator.AnimatorUpdateListener() {
+        @Override
+        public void onAnimationUpdate(ValueAnimator animation) {
+            mTranslateX = (float) animation.getAnimatedValue();
+            mTranslateLastX = mTranslateX;
+            postInvalidate();
+        }
+    };
+
+    private ValueAnimator.AnimatorUpdateListener mTranslateYAniListener = new ValueAnimator.AnimatorUpdateListener() {
+        @Override
+        public void onAnimationUpdate(ValueAnimator animation) {
+            mTranslateY = (float) animation.getAnimatedValue();
+            mTranslateLastY = mTranslateY;
+            postInvalidate();
+        }
+    };
 
     /**
      * 定义图片是单选还是多选
