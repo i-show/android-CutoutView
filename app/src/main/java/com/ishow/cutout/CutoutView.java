@@ -314,9 +314,8 @@ public class CutoutView extends View {
         }
         canvas.save();
 
-        mMatrix.setTranslate(mTranslateX, mTranslateY);
-        mMatrix.preScale(mZoomScale, mZoomScale, mTouchTwoPointCenter[0], mTouchTwoPointCenter[1]);
-        canvas.setMatrix(mMatrix);
+        setGestureInfo(mMatrix);
+        //canvas.setMatrix(mMatrix);
 
         /*
          * 画仿透明的背景
@@ -328,12 +327,13 @@ public class CutoutView extends View {
                 mPhotoTop + mPhotoBitmap.getHeight(),
                 mTransparentPaint);
 
-        canvas.drawBitmap(mPhotoBitmap, mPhotoLeft, mPhotoTop, mPhotoPaint);
+        canvas.drawBitmap(mPhotoBitmap, mMatrix, mPhotoPaint);
 
         if (isActionTrackVisible) {
             canvas.drawPath(mCurrentPath, mActionPaint);
         }
         canvas.restore();
+
 
         drawEnlarge(canvas);
 
@@ -553,8 +553,16 @@ public class CutoutView extends View {
         mTranslateYAnimator.start();
     }
 
-    private Bitmap getEraserResultBitmap() {
+    private void setGestureInfo(Matrix matrix) {
+        setGestureInfo(matrix, mZoomScale);
+    }
 
+    private void setGestureInfo(Matrix matrix, float scale) {
+        matrix.setTranslate(mTranslateX, mTranslateY);
+        matrix.preScale(scale, scale, mTouchTwoPointCenter[0], mTouchTwoPointCenter[1]);
+    }
+
+    private Bitmap getEraserResultBitmap() {
         Bitmap bitmap = Bitmap.createBitmap(mPhotoBitmap.getWidth(), mPhotoBitmap.getHeight(), Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(bitmap);
         mPhotoPaint.setXfermode(null);

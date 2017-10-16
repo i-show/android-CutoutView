@@ -25,7 +25,7 @@ public class CutoutActivity extends BaseActivity implements OnSelectPhotoListene
         setContentView(R.layout.activity_main);
         ImageLoader.init(this);
         mCutoutView = (CutoutView) findViewById(cutout);
-        mCutoutView.setMode(CutoutView.Mode.ERASER);
+        mCutoutView.setMode(CutoutView.Mode.CUT_OUT);
         mCutoutView.setOnCutoutListener(new CutoutView.OnCutoutListener() {
             @Override
             public void canBack(int count) {
