@@ -558,8 +558,8 @@ public class CutoutView extends View {
     }
 
     private void setGestureInfo(Matrix matrix, float scale) {
-        matrix.setTranslate(mTranslateX, mTranslateY);
-        matrix.preScale(scale, scale, mTouchTwoPointCenter[0], mTouchTwoPointCenter[1]);
+        matrix.setScale(scale, scale, mTouchTwoPointCenter[0], mTouchTwoPointCenter[1]);
+        matrix.preTranslate(mTranslateX, mTranslateY);
     }
 
     private Bitmap getEraserResultBitmap() {
