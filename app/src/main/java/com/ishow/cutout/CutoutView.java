@@ -1,5 +1,6 @@
 package com.ishow.cutout;
 
+import android.animation.PropertyValuesHolder;
 import android.animation.ValueAnimator;
 import android.content.Context;
 import android.graphics.Bitmap;
@@ -61,11 +62,11 @@ public class CutoutView extends View {
     /**
      * 最大放大倍数
      */
-    private static final float MAX_ZOOM_SCALE = 2;
+    private static final float MAX_ZOOM_SCALE = 2.5F;
     /**
      * 缩放的最小倍数
      */
-    private static final float MIN_ZOOM_SCALE = 0.3f;
+    private static final float MIN_ZOOM_SCALE = 0.3F;
 
     /**
      * 动作路径
@@ -113,32 +114,21 @@ public class CutoutView extends View {
     private float[] mMovePoint;
     private float[] mUpPoint;
     private float[] mTouchTwoPointCenter;
-    private float[] mDownPointOne;
-    private float[] mDownPointTwo;
-    /**
-     * 缩放的比例
-     */
-    private float mZoomScale;
-    private float mZoomLastScale;
+    private float[] mLastPointOne;
+    private float[] mLastPointTwo;
+
     /**
      * 上一次2点之间的距离
      */
     private double mLastTwoPointDistance;
-    /**
-     * 移动的距离
-     */
-    private float mTranslateX;
-    private float mTranslateY;
-    private float mTranslateLastX;
-    private float mTranslateLastY;
+
 
     private List<CutoutRecord> mCutoutRecordList;
     private CutoutRecord mCurrentRecord;
     private ValueAnimator mZoomAnimator;
-    private ValueAnimator mTranslateXAnimator;
-    private ValueAnimator mTranslateYAnimator;
 
     private Matrix mMatrix;
+    private Matrix mExchangedMatrix;
     private RectF mPhotoRectF;
 
     public CutoutView(Context context) {
@@ -159,6 +149,7 @@ public class CutoutView extends View {
     private void init() {
         setLayerType(View.LAYER_TYPE_SOFTWARE, null);
         mMatrix = new Matrix();
+        mExchangedMatrix = new Matrix();
         mPhotoRectF = new RectF();
 
         mMode = Mode.CUT_OUT;
@@ -168,13 +159,8 @@ public class CutoutView extends View {
         mMovePoint = new float[2];
         mUpPoint = new float[2];
         mTouchTwoPointCenter = new float[2];
-        mDownPointOne = new float[2];
-        mDownPointTwo = new float[2];
-
-        mZoomScale = 1.0f;
-        mZoomLastScale = 1.0f;
-        mTranslateX = 0f;
-        mTranslateY = 0f;
+        mLastPointOne = new float[2];
+        mLastPointTwo = new float[2];
 
         mPhotoPaint = new Paint();
         mPhotoPaint.setDither(true);
@@ -185,14 +171,6 @@ public class CutoutView extends View {
         mZoomAnimator.setDuration(500);
         mZoomAnimator.addUpdateListener(mZoomAniListener);
 
-
-        mTranslateXAnimator = ValueAnimator.ofFloat();
-        mTranslateXAnimator.setDuration(500);
-        mTranslateXAnimator.addUpdateListener(mTranslateXAniListener);
-
-        mTranslateYAnimator = ValueAnimator.ofFloat();
-        mTranslateYAnimator.setDuration(500);
-        mTranslateYAnimator.addUpdateListener(mTranslateYAniListener);
 
         // 透明背景
         Bitmap transparentBitmap = BitmapFactory.decodeResource(getResources(), R.drawable.imitate_transparent_bg_piece);
@@ -242,15 +220,15 @@ public class CutoutView extends View {
                 }
                 break;
             case MotionEvent.ACTION_POINTER_DOWN:
-                mLastTwoPointDistance = getTouchPointDistance(event);
                 mTouchPoint += 1;
                 isEnlargeVisible = false;
                 isGestured = true;
 
-                mDownPointOne[0] = event.getX(0);
-                mDownPointOne[1] = event.getY(0);
-                mDownPointTwo[0] = event.getX(1);
-                mDownPointTwo[1] = event.getY(1);
+                mLastPointOne[0] = event.getX(0);
+                mLastPointOne[1] = event.getY(0);
+                mLastPointTwo[0] = event.getX(1);
+                mLastPointTwo[1] = event.getY(1);
+                mLastTwoPointDistance = getTouchPointDistance(mLastPointOne, mLastPointTwo);
                 break;
             case MotionEvent.ACTION_MOVE:
                 mMovePoint[0] = event.getX();
@@ -313,10 +291,7 @@ public class CutoutView extends View {
             return;
         }
         canvas.save();
-
-        setGestureInfo(mMatrix);
-        //canvas.setMatrix(mMatrix);
-
+        canvas.concat(mMatrix);
         /*
          * 画仿透明的背景
          */
@@ -327,7 +302,7 @@ public class CutoutView extends View {
                 mPhotoTop + mPhotoBitmap.getHeight(),
                 mTransparentPaint);
 
-        canvas.drawBitmap(mPhotoBitmap, mMatrix, mPhotoPaint);
+        canvas.drawBitmap(mPhotoBitmap, mPhotoLeft, mPhotoTop, mPhotoPaint);
 
         if (isActionTrackVisible) {
             canvas.drawPath(mCurrentPath, mActionPaint);
@@ -445,31 +420,52 @@ public class CutoutView extends View {
     }
 
     private void onGestureMove(MotionEvent event) {
-        double nowDistance = getTouchPointDistance(event);
-        mTouchTwoPointCenter[0] = event.getX(0) + (event.getX(1) - event.getX(0)) / 2;
-        mTouchTwoPointCenter[1] = event.getY(0) + (event.getY(1) - event.getY(0)) / 2;
+        final float pointOneX = event.getX(0);
+        final float pointOneY = event.getY(0);
+        final float pointTwoX = event.getX(1);
+        final float pointTwoY = event.getY(1);
 
-        mTranslateX = mTranslateLastX + Math.min(event.getX(0) - mDownPointOne[0], event.getX(1) - mDownPointTwo[0]);
-        mTranslateY = mTranslateLastY + Math.min(event.getY(0) - mDownPointOne[1], event.getY(1) - mDownPointTwo[1]);
 
-        final float scale = (float) (nowDistance / mLastTwoPointDistance);
-        mZoomScale = mZoomLastScale + (scale - 1);
-        mZoomScale = Math.max(mZoomScale, MIN_ZOOM_SCALE);
+        final float translateX = Math.min(pointOneX - mLastPointOne[0], pointTwoX - mLastPointTwo[0]);
+        final float translateY = Math.min(pointOneY - mLastPointOne[1], pointTwoY - mLastPointTwo[1]);
+        mMatrix.postTranslate(translateX, translateY);
+        mLastPointOne[0] = pointOneX;
+        mLastPointOne[1] = pointOneY;
+        mLastPointTwo[0] = pointTwoX;
+        mLastPointTwo[1] = pointTwoY;
+
+        mTouchTwoPointCenter[0] = pointOneX + (pointTwoX - pointOneX) / 2;
+        mTouchTwoPointCenter[1] = pointOneY + (pointTwoY - pointOneY) / 2;
+
+        final float currentScale = getValues(Matrix.MSCALE_X);
+        final double nowDistance = getTouchPointDistance(mLastPointOne, mLastPointTwo);
+        float nowScale = (float) (nowDistance / mLastTwoPointDistance);
+        mLastTwoPointDistance = nowDistance;
+
+        mExchangedMatrix.set(mMatrix);
+        mExchangedMatrix.postScale(nowScale, nowScale, mTouchTwoPointCenter[0], mTouchTwoPointCenter[1]);
+        final float preScale = getValues(mExchangedMatrix, Matrix.MSCALE_X);
+        if (preScale < MIN_ZOOM_SCALE) {
+            nowScale = MIN_ZOOM_SCALE / currentScale;
+        } else if (preScale > MAX_ZOOM_SCALE) {
+            nowScale = MAX_ZOOM_SCALE / currentScale;
+        }
+
+        mMatrix.postScale(nowScale, nowScale, mTouchTwoPointCenter[0], mTouchTwoPointCenter[1]);
     }
 
 
     @SuppressWarnings("UnusedParameters")
     private void onGestureUp(MotionEvent event) {
         isGestured = true;
-        mZoomLastScale = mZoomScale;
-        mTranslateLastX = mTranslateX;
-        mTranslateLastY = mTranslateY;
+        final float scale = getValues(Matrix.MSCALE_X);
 
-        if (mZoomScale > 1) {
-            onGestureZoomin(event);
+        if (scale > 1) {
+            onGestureZoomIn(event, scale);
         } else {
-            onGestureZoomOut(event);
+            onGestureZoomOut(event, scale);
         }
+
     }
 
 
@@ -477,89 +473,110 @@ public class CutoutView extends View {
      * 放大
      */
     @SuppressWarnings("UnusedParameters")
-    private void onGestureZoomin(MotionEvent event) {
-        final float scale;
-        if (mZoomScale > MAX_ZOOM_SCALE) {
-            scale = MAX_ZOOM_SCALE;
-            mZoomAnimator.setFloatValues(mZoomLastScale, MAX_ZOOM_SCALE);
-            mZoomAnimator.start();
-        } else {
-            scale = mZoomScale;
-        }
+    private void onGestureZoomIn(MotionEvent event, float scale) {
+        final float translateX = getValues(Matrix.MTRANS_X);
+        final float translateY = getValues(Matrix.MTRANS_Y);
 
         resetPhotoRectF();
-        Matrix matrix = new Matrix();
-        matrix.setTranslate(mTranslateX, mTranslateY);
-        matrix.preScale(scale, scale, mTouchTwoPointCenter[0], mTouchTwoPointCenter[1]);
-        matrix.mapRect(mPhotoRectF);
+        PropertyValuesHolder scaleValues = null;
+        PropertyValuesHolder translateXValues = null;
+        PropertyValuesHolder translateYValues = null;
+
+
+        mMatrix.mapRect(mPhotoRectF);
+
+        Log.i(TAG, "onGestureZoomIn: ==========================");
+        Log.i(TAG, "onGestureZoomIn:  scale = " + scale);
+        Log.i(TAG, "onGestureZoomIn:  translateX = " + translateX);
+        Log.i(TAG, "onGestureZoomIn:  mPhotoRectF = " + mPhotoRectF.toString());
 
         final float photoWidth = mPhotoRectF.width();
         final float photoHeight = mPhotoRectF.height();
+        // X轴
         if (photoWidth > mViewWidth) {
             // 左移
             if (mPhotoRectF.right < mViewWidth) {
-                final float result = mTranslateX + (mViewWidth - mPhotoRectF.right);
-                mTranslateXAnimator.setFloatValues(mTranslateX, result);
-                mTranslateXAnimator.start();
+                final float result = translateX + (mViewWidth - mPhotoRectF.right);
+                translateXValues = PropertyValuesHolder.ofFloat("translateX", translateX, result);
+                Log.i(TAG, "onGestureZoomIn: result X 1 = " + result);
             } else if (mPhotoRectF.left > 0) {
-                final float result = mTranslateX - mPhotoRectF.left;
-                mTranslateXAnimator.setFloatValues(mTranslateX, result);
-                mTranslateXAnimator.start();
+                final float result = translateX - mPhotoRectF.left;
+                translateXValues = PropertyValuesHolder.ofFloat("translateX", translateX, result);
+                Log.i(TAG, "onGestureZoomIn: result X 2 = " + result);
             }
         } else {
-                /*
-                 * 1. (mViewWidth - viewWidth) / 2      单侧移动的了多少距离
-                 * 2. (mPhotoRectF.left - (mViewWidth - viewWidth) / 2    需要移动的距离
-                 * 3. mTranslateX - (mPhotoRectF.left - (mViewWidth - viewWidth) / 2) 最终的距离
-                 */
-            final float result = mTranslateX - (mPhotoRectF.left - (mViewWidth - photoWidth) / 2);
-            Log.i(TAG, "onGestureUp: result = " + result);
-            mTranslateXAnimator.setFloatValues(mTranslateX, result);
-            mTranslateXAnimator.start();
+            /*
+             * 1. (mViewWidth - viewWidth) / 2      单侧移动的了多少距离
+             * 2. (mPhotoRectF.left - (mViewWidth - viewWidth) / 2    需要移动的距离
+             * 3. mTranslateX - (mPhotoRectF.left - (mViewWidth - viewWidth) / 2) 最终的距离
+             */
+            final float result = translateX - (mPhotoRectF.left - (mViewWidth - photoWidth) / 2);
+            Log.i(TAG, "onGestureZoomIn: result X3 = " + result);
+            translateXValues = PropertyValuesHolder.ofFloat("translateX", translateX, result);
         }
 
+        // Y轴
         if (photoHeight > mViewHeight) {
             // 上移
             if (mPhotoRectF.top > 0) {
-                final float result = mTranslateY - mPhotoRectF.top;
-                mTranslateYAnimator.setFloatValues(mTranslateY, result);
-                mTranslateYAnimator.start();
+                final float result = translateY - mPhotoRectF.top;
+                translateYValues = PropertyValuesHolder.ofFloat("translateY", translateY, result);
             } else if (mPhotoRectF.bottom < mViewHeight) {
-                final float result = mTranslateY + (mViewHeight - mPhotoRectF.bottom);
-                mTranslateYAnimator.setFloatValues(mTranslateY, result);
-                mTranslateYAnimator.start();
+                final float result = translateY + (mViewHeight - mPhotoRectF.bottom);
+                translateYValues = PropertyValuesHolder.ofFloat("translateY", translateY, result);
             }
         } else {
                 /*
                  * 同X
                  */
-            final float result = mTranslateY - (mPhotoRectF.top - (mViewHeight - photoHeight) / 2);
-            mTranslateYAnimator.setFloatValues(mTranslateY, result);
-            mTranslateYAnimator.start();
+            final float result = translateY - (mPhotoRectF.top - (mViewHeight - photoHeight) / 2);
+            translateYValues = PropertyValuesHolder.ofFloat("translateY", translateY, result);
         }
 
+        startAnimation(scaleValues, translateXValues, translateYValues);
     }
 
     /**
      * 缩小
      */
     @SuppressWarnings("UnusedParameters")
-    private void onGestureZoomOut(MotionEvent event) {
-        mZoomAnimator.setFloatValues(mZoomLastScale, 1);
+    private void onGestureZoomOut(MotionEvent event, float scale) {
+        final float translateX = getValues(Matrix.MTRANS_X);
+        final float translateY = getValues(Matrix.MTRANS_Y);
+
+        PropertyValuesHolder scaleValues = PropertyValuesHolder.ofFloat("scale", scale, 1);
+        PropertyValuesHolder translateXValues = PropertyValuesHolder.ofFloat("translateX", translateX, 0);
+        PropertyValuesHolder translateYValues = PropertyValuesHolder.ofFloat("translateY", translateY, 0);
+        mTouchTwoPointCenter[0] = 0;
+        mTouchTwoPointCenter[1] = 0;
+
+        startAnimation(scaleValues, translateXValues, translateYValues);
+    }
+
+    private void startAnimation(PropertyValuesHolder scale, PropertyValuesHolder translateX, PropertyValuesHolder translateY) {
+        if (mZoomAnimator != null && mZoomAnimator.isRunning()) {
+            mZoomAnimator.cancel();
+        }
+
+        List<PropertyValuesHolder> list = new ArrayList<>();
+        if (scale != null) {
+            list.add(scale);
+        }
+
+        if (translateX != null) {
+            list.add(translateX);
+        }
+
+        if (translateY != null) {
+            list.add(translateY);
+        }
+
+        if (list.isEmpty()) {
+            Log.i(TAG, "startAnimation:  no animation");
+            return;
+        }
+        mZoomAnimator.setValues((PropertyValuesHolder[]) list.toArray(new PropertyValuesHolder[list.size()]));
         mZoomAnimator.start();
-        mTranslateXAnimator.setFloatValues(mTranslateX, 0);
-        mTranslateXAnimator.start();
-        mTranslateYAnimator.setFloatValues(mTranslateY, 0);
-        mTranslateYAnimator.start();
-    }
-
-    private void setGestureInfo(Matrix matrix) {
-        setGestureInfo(matrix, mZoomScale);
-    }
-
-    private void setGestureInfo(Matrix matrix, float scale) {
-        matrix.setScale(scale, scale, mTouchTwoPointCenter[0], mTouchTwoPointCenter[1]);
-        matrix.preTranslate(mTranslateX, mTranslateY);
     }
 
     private Bitmap getEraserResultBitmap() {
@@ -651,11 +668,12 @@ public class CutoutView extends View {
     /**
      * 获取 距离
      */
-    private double getTouchPointDistance(MotionEvent event) {
-        float x = event.getX(0) - event.getX(1);
-        float y = event.getY(0) - event.getY(1);
+    private double getTouchPointDistance(float[] one, float[] two) {
+        float x = one[0] - two[0];
+        float y = one[1] - two[1];
         return Math.sqrt(x * x + y * y);
     }
+
 
     /**
      * 计算图片相关信息
@@ -719,6 +737,7 @@ public class CutoutView extends View {
         CutoutRecord record = new CutoutRecord();
         record.setImagePath(path);
 
+        mMatrix.reset();
         mCutoutRecordList.clear();
         mCutoutRecordList.add(record);
         mCurrentRecord = record;
@@ -989,32 +1008,56 @@ public class CutoutView extends View {
         mPhotoRectF.bottom = mPhotoRectF.top + mPhotoHeight;
     }
 
+    private float getValues(int index) {
+        float[] values = new float[9];
+        mMatrix.getValues(values);
+        return values[index];
+    }
+
+    private float getValues(Matrix matrix, int index) {
+        float[] values = new float[9];
+        matrix.getValues(values);
+        return values[index];
+    }
+
     private ValueAnimator.AnimatorUpdateListener mZoomAniListener = new ValueAnimator.AnimatorUpdateListener() {
         @Override
         public void onAnimationUpdate(ValueAnimator animation) {
-            mZoomScale = (float) animation.getAnimatedValue();
-            mZoomLastScale = mZoomScale;
-            postInvalidate();
-        }
-    };
+            Object scaleOb = animation.getAnimatedValue("scale");
+            if (scaleOb != null) {
+                float scale = (float) scaleOb;
+                float lastScale = getValues(Matrix.MSCALE_X);
+                scale = scale / lastScale;
+                mMatrix.postScale(scale, scale, mTouchTwoPointCenter[0], mTouchTwoPointCenter[1]);
+            }
 
-    private ValueAnimator.AnimatorUpdateListener mTranslateXAniListener = new ValueAnimator.AnimatorUpdateListener() {
-        @Override
-        public void onAnimationUpdate(ValueAnimator animation) {
-            mTranslateX = (float) animation.getAnimatedValue();
-            mTranslateLastX = mTranslateX;
-            postInvalidate();
-        }
-    };
+            float lastTranslateX = getValues(Matrix.MTRANS_X);
+            float lastTranslateY = getValues(Matrix.MTRANS_Y);
 
-    private ValueAnimator.AnimatorUpdateListener mTranslateYAniListener = new ValueAnimator.AnimatorUpdateListener() {
-        @Override
-        public void onAnimationUpdate(ValueAnimator animation) {
-            mTranslateY = (float) animation.getAnimatedValue();
-            mTranslateLastY = mTranslateY;
+            Object translateXOb = animation.getAnimatedValue("translateX");
+            float translateX;
+            if (translateXOb != null) {
+                translateX = (float) translateXOb - lastTranslateX;
+            } else {
+                translateX = 0;
+            }
+
+            Object translateYOb = animation.getAnimatedValue("translateY");
+            float translateY;
+            if (translateYOb != null) {
+                translateY = (float) translateYOb - lastTranslateY;
+            } else {
+                translateY = 0;
+            }
+
+            if (translateX != 0 || translateY != 0) {
+                mMatrix.postTranslate(translateX, translateY);
+            }
             postInvalidate();
         }
     };
+    ;
+
 
     /**
      * 定义图片是单选还是多选
