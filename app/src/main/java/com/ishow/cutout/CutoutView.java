@@ -74,7 +74,7 @@ public class CutoutView extends View {
      * 动作路径
      */
     private Path mCurrentPath;
-    private Path mExchangedPath;
+    private Path mRealPath;
     /**
      * 用来计算动作路径
      */
@@ -89,15 +89,22 @@ public class CutoutView extends View {
     private PorterDuffXfermode mEnlargePorterMode;
     private PorterDuffXfermode mEraserPorterMode;
     private Bitmap mPhotoBitmap;
+    private Bitmap mCutoutBitmap;
     private Bitmap mEnlargeBgBitmap;
 
     private boolean isActionTrackVisible;
     private boolean isEnlargeVisible;
+    private boolean isCutoutNewPath;
     /**
      * 是否手势操作过
      */
     private boolean isGestured;
     private boolean isMoved;
+    /**
+     * 模式
+     * 抠图模式 {@link Mode#CUT_OUT}
+     * 擦图模式 {@link Mode#ERASER}
+     */
     private int mMode;
 
     private int mPhotoTop;
@@ -121,6 +128,8 @@ public class CutoutView extends View {
     private float[] mTouchTwoPointCenter;
     private float[] mLastPointOne;
     private float[] mLastPointTwo;
+    private float[] mStartCutoutPoint;
+    private float[] mLastCutoutPoint;
 
     /**
      * 上一次2点之间的距离
@@ -167,6 +176,8 @@ public class CutoutView extends View {
         mTouchTwoPointCenter = new float[2];
         mLastPointOne = new float[2];
         mLastPointTwo = new float[2];
+        mStartCutoutPoint = new float[2];
+        mLastCutoutPoint = new float[2];
 
         mPhotoPaint = new Paint();
         mPhotoPaint.setDither(true);
@@ -175,7 +186,7 @@ public class CutoutView extends View {
 
         mZoomAnimator = ValueAnimator.ofFloat();
         mZoomAnimator.setDuration(500);
-        mZoomAnimator.addUpdateListener(mZoomAniListener);
+        mZoomAnimator.addUpdateListener(mAniListener);
 
 
         // 透明背景
@@ -187,7 +198,8 @@ public class CutoutView extends View {
         mTransparentPaint.setShader(transparentShader);
 
         mCurrentPath = new Path();
-        mExchangedPath = new Path();
+        mRealPath = new Path();
+
 
         mActionPaint = new Paint();
         mActionPaint.setDither(true);
@@ -224,8 +236,6 @@ public class CutoutView extends View {
                 isMoved = false;
                 mDownPoint[0] = event.getX();
                 mDownPoint[1] = event.getY();
-
-
                 break;
             case MotionEvent.ACTION_POINTER_DOWN:
                 mTouchPoint += 1;
@@ -253,20 +263,19 @@ public class CutoutView extends View {
                 if (mTouchPoint >= 2) {
                     onGestureMove(event);
                 } else if (!isGestured) { // 手势操作后不能进行其他操作
-
-                    if (isMoved) {
-                        if (mMode == Mode.CUT_OUT) {
-                            onCutoutMove(event);
-                        } else {
-                            onEraserMove(event);
-                        }
-                    } else {
+                    if (!isMoved) {
                         if (mMode == Mode.CUT_OUT) {
                             onCutoutDown(event);
                         } else {
                             onEraserDown(event);
                         }
                         isMoved = true;
+                    } else {
+                        if (mMode == Mode.CUT_OUT) {
+                            onCutoutMove(event);
+                        } else {
+                            onEraserMove(event);
+                        }
                     }
 
 
@@ -283,6 +292,8 @@ public class CutoutView extends View {
             case MotionEvent.ACTION_UP:
                 mTouchPoint = 0;
                 isEnlargeVisible = false;
+                mUpPoint[0] = event.getX();
+                mUpPoint[1] = event.getY();
                 // 手势操作后不能进行其他操作
                 if (!isGestured) {
                     if (mMode == Mode.CUT_OUT) {
@@ -333,17 +344,15 @@ public class CutoutView extends View {
         canvas.drawBitmap(mPhotoBitmap, mPhotoLeft, mPhotoTop, mPhotoPaint);
 
         if (isActionTrackVisible) {
-            canvas.drawPath(mCurrentPath, mActionPaint);
+            canvas.drawBitmap(mCutoutBitmap, mPhotoLeft, mPhotoTop, mPhotoPaint);
         }
         canvas.restore();
 
-        if (isActionTrackVisible) {
-            canvas.drawPath(mExchangedPath, mActionPaint);
+        if (isActionTrackVisible && !isCutoutNewPath) {
+            canvas.drawPath(mCurrentPath, mActionPaint);
         }
 
-
         drawEnlarge(canvas);
-
     }
 
     private void drawEnlarge(Canvas canvas) {
@@ -395,45 +404,70 @@ public class CutoutView extends View {
     /**
      * 抠图按下操作
      */
+    @SuppressWarnings("UnusedParameters")
     private void onCutoutDown(MotionEvent event) {
         isActionTrackVisible = true;
+        isCutoutNewPath = false;
         mActionPaint.setAlpha(TRACK_ALPHA);
 
-        mPathMeasure.setPath(mCurrentPath, false);
+        float[] real = computeRealPoint(mDownPoint);
+
+        mPathMeasure.setPath(mRealPath, false);
         // 如果之前是closed 就重置
         if (mPathMeasure.getLength() == 0 || mPathMeasure.isClosed()) {
-
-
+            mRealPath.reset();
+            mRealPath.moveTo(real[0], real[1]);
             mCurrentPath.reset();
-            mExchangedPath.reset();
-            mExchangedPath.moveTo(event.getX(), event.getY());
+            mCurrentPath.moveTo(mDownPoint[0], mDownPoint[1]);
+            mStartCutoutPoint = real;
         } else {
-            float[] target = new float[2];
-            mPathMeasure.getPosTan(mPathMeasure.getLength(), target, null);
-            mExchangedPath.moveTo(target[0], target[1]);
-            mExchangedPath.lineTo(event.getX(), event.getY());
+            mRealPath.lineTo(real[0], real[1]);
+
+            mLastCutoutPoint = computeNowPoint(mLastCutoutPoint);
+            mCurrentPath.moveTo(mLastCutoutPoint[0], mLastCutoutPoint[1]);
+            mCurrentPath.lineTo(mDownPoint[0], mDownPoint[1]);
         }
+
     }
 
     private void onCutoutMove(MotionEvent event) {
-        mExchangedPath.lineTo(event.getX(), event.getY());
+        float[] real = computeRealPoint(mMovePoint);
+        mRealPath.lineTo(real[0], real[1]);
+        mCurrentPath.lineTo(event.getX(), event.getY());
     }
 
     private void onCutoutUp(MotionEvent event) {
-        mUpPoint[0] = event.getX();
-        mUpPoint[1] = event.getY();
-        mPathMeasure.setPath(mCurrentPath, false);
+        isCutoutNewPath = true;
+        float[] real = computeRealPoint(mUpPoint);
+        mRealPath.lineTo(real[0], real[1]);
+        mCurrentPath.lineTo(event.getX(), event.getY());
+
+        mPathMeasure.setPath(mRealPath, false);
         final float actionLength = mPathMeasure.getLength();
-        final double distance = getPointDistance(mDownPoint, mUpPoint);
+        final double distance = getPointDistance(mStartCutoutPoint, real);
         if (actionLength > EFFECTIVE_MOVE_DISTANCE && distance < EFFECTIVE_DISTANCE) {
-            mCurrentPath.close();
-            mPathMeasure.setPath(mCurrentPath, false);
-            mCurrentRecord.clearPointList();
+            mRealPath.close();
+            final float start[] = computeNowPoint(mStartCutoutPoint);
+            Path path = new Path();
+            path.moveTo(event.getX(), event.getY());
+            path.lineTo(start[0], start[1]);
+            updateCutoutPathBitmap(path);
+
             new Thread(mResultCutoutRunnable).start();
         } else {
-            mCurrentPath.addPath(mExchangedPath);
-            mExchangedPath = new Path();
             mCurrentRecord.addCutoutTrack(mPathMeasure.getLength());
+            updateCutoutPathBitmap();
+
+            Matrix matrix = new Matrix();
+            mMatrix.invert(matrix);
+            mCurrentRecord.addCutoutMatrix(matrix);
+            mCurrentRecord.addCutoutPath(mCurrentPath);
+            mCurrentPath = new Path();
+
+            mLastCutoutPoint[0] = event.getX();
+            mLastCutoutPoint[1] = event.getY();
+            mLastCutoutPoint = computeRealPoint(mLastCutoutPoint);
+
             notifyCanBack();
         }
     }
@@ -457,7 +491,6 @@ public class CutoutView extends View {
     private void onEraserUp(MotionEvent event) {
         Matrix matrix = new Matrix();
         mMatrix.invert(matrix);
-
         mCurrentRecord.addEraserMatrix(matrix);
         mCurrentRecord.addEraserPath(mCurrentPath);
         mCurrentPath = new Path();
@@ -536,11 +569,9 @@ public class CutoutView extends View {
             if (mPhotoRectF.right < mViewWidth) {
                 final float result = translateX + (mViewWidth - mPhotoRectF.right);
                 translateXValues = PropertyValuesHolder.ofFloat("translateX", translateX, result);
-                Log.i(TAG, "onGestureZoomIn: result X 1 = " + result);
             } else if (mPhotoRectF.left > 0) {
                 final float result = translateX - mPhotoRectF.left;
                 translateXValues = PropertyValuesHolder.ofFloat("translateX", translateX, result);
-                Log.i(TAG, "onGestureZoomIn: result X 2 = " + result);
             }
         } else {
             /*
@@ -549,7 +580,6 @@ public class CutoutView extends View {
              * 3. mTranslateX - (mPhotoRectF.left - (mViewWidth - viewWidth) / 2) 最终的距离
              */
             final float result = translateX - (mPhotoRectF.left - (mViewWidth - photoWidth) / 2);
-            Log.i(TAG, "onGestureZoomIn: result X3 = " + result);
             translateXValues = PropertyValuesHolder.ofFloat("translateX", translateX, result);
         }
 
@@ -644,7 +674,7 @@ public class CutoutView extends View {
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         paint.setMaskFilter(new BlurMaskFilter(100, BlurMaskFilter.Blur.NORMAL));
         canvas.translate(-mPhotoLeft, -mPhotoTop);
-        canvas.drawPath(mCurrentPath, paint);
+        canvas.drawPath(mRealPath, paint);
         return bitmap;
     }
 
@@ -666,17 +696,39 @@ public class CutoutView extends View {
         Bitmap bitmap = Bitmap.createBitmap(mViewWidth, mViewHeight, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(bitmap);
         canvas.save();
-        canvas.setMatrix(mExchangedMatrix);
+        canvas.concat(mExchangedMatrix);
         canvas.drawPath(mCurrentPath, mActionPaint);
         canvas.restore();
         return bitmap;
     }
 
 
+    private void updateCutoutPathBitmap() {
+        mExchangedMatrix.reset();
+        mMatrix.invert(mExchangedMatrix);
+        Canvas canvas = new Canvas(mCutoutBitmap);
+        canvas.save();
+        canvas.translate(-mPhotoLeft, -mPhotoTop);
+        canvas.concat(mExchangedMatrix);
+        canvas.drawPath(mCurrentPath, mActionPaint);
+        canvas.restore();
+    }
+
+    private void updateCutoutPathBitmap(Path path) {
+        mExchangedMatrix.reset();
+        mMatrix.invert(mExchangedMatrix);
+        Canvas canvas = new Canvas(mCutoutBitmap);
+        canvas.save();
+        canvas.translate(-mPhotoLeft, -mPhotoTop);
+        canvas.concat(mExchangedMatrix);
+        canvas.drawPath(mCurrentPath, mActionPaint);
+        canvas.drawPath(path, mActionPaint);
+        canvas.restore();
+    }
+
     private Bitmap getBackEraserPathBitmap(List<Path> pathList, List<Matrix> matrixList) {
         Bitmap bitmap = Bitmap.createBitmap(mPhotoBitmap.getWidth(), mPhotoBitmap.getHeight(), Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(bitmap);
-        Matrix ma = new Matrix();
         for (int i = 0; i < pathList.size(); i++) {
             Path path = pathList.get(i);
             Matrix matrix = matrixList.get(i);
@@ -760,6 +812,8 @@ public class CutoutView extends View {
         mPhotoBitmap = Bitmap.createBitmap(bitmap, 0, 0, width, height, matrix, true);
         mPhotoWidth = mPhotoBitmap.getWidth();
         mPhotoHeight = mPhotoBitmap.getHeight();
+
+        mCutoutBitmap = Bitmap.createBitmap(mPhotoWidth, mPhotoHeight, Bitmap.Config.ARGB_8888);
     }
 
     public void setMode(@Mode int mode) {
@@ -1074,7 +1128,7 @@ public class CutoutView extends View {
         return values[index];
     }
 
-    private ValueAnimator.AnimatorUpdateListener mZoomAniListener = new ValueAnimator.AnimatorUpdateListener() {
+    private ValueAnimator.AnimatorUpdateListener mAniListener = new ValueAnimator.AnimatorUpdateListener() {
         @Override
         public void onAnimationUpdate(ValueAnimator animation) {
             Object scaleOb = animation.getAnimatedValue("scale");
@@ -1111,6 +1165,21 @@ public class CutoutView extends View {
         }
     };
 
+    private float[] computeRealPoint(float[] point) {
+        float[] real = new float[2];
+        mExchangedMatrix.reset();
+        mMatrix.invert(mExchangedMatrix);
+        Log.i(TAG, "computeRealPoint: mExchangedMatrix = " + mExchangedMatrix);
+        mExchangedMatrix.mapPoints(real, point);
+        Log.i(TAG, "computeRealPoint: real x = " + real[0] + " , real y = " + real[1]);
+        return real;
+    }
+
+    private float[] computeNowPoint(float[] point) {
+        float[] now = new float[2];
+        mMatrix.mapPoints(now, point);
+        return now;
+    }
 
     /**
      * 定义图片是单选还是多选

@@ -18,10 +18,17 @@ public class CutoutRecord {
      */
     private String imagePath;
     /**
-     * 路径列表
+     * 擦图
      */
     private List<Path> eraserPathList;
     private List<Matrix> eraserMatrixList;
+
+
+    /**
+     * 抠图的路径
+     */
+    private List<Path> cutoutPathList;
+    private List<Matrix> cutoutMatrixList;
     /**
      * 抠图的轨迹
      */
@@ -57,6 +64,41 @@ public class CutoutRecord {
             eraserPathList = new ArrayList<>();
         }
         eraserPathList.add(path);
+    }
+
+
+    public void addCutoutMatrix(Matrix matrix) {
+        if (matrix == null) {
+            return;
+        }
+        if (cutoutMatrixList == null) {
+            cutoutMatrixList = new ArrayList<>();
+        }
+        cutoutMatrixList.add(matrix);
+    }
+
+    public void addCutoutPath(Path path) {
+        if (path == null) {
+            return;
+        }
+        if (cutoutPathList == null) {
+            cutoutPathList = new ArrayList<>();
+        }
+        cutoutPathList.add(path);
+    }
+
+    public List<Matrix> getCutoutMatrixList() {
+        if (cutoutMatrixList == null) {
+            cutoutMatrixList = new ArrayList<>();
+        }
+        return cutoutMatrixList;
+    }
+
+    public List<Path> getCutoutPathList() {
+        if (cutoutPathList == null) {
+            cutoutPathList = new ArrayList<>();
+        }
+        return cutoutPathList;
     }
 
     public void addCutoutTrack(float length) {
@@ -106,6 +148,12 @@ public class CutoutRecord {
 
     public void clearEraserPathList() {
         getEraserPathList().clear();
+    }
+
+    public void clearCutout() {
+        getCutoutTrackList().clear();
+        getCutoutMatrixList().clear();
+        getCutoutPathList().clear();
     }
 
     /**
