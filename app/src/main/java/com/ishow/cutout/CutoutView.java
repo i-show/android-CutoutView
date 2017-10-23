@@ -24,6 +24,7 @@ import android.util.AttributeSet;
 import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.widget.Toast;
 
 import com.ishow.common.utils.StringUtils;
@@ -96,6 +97,7 @@ public class CutoutView extends View {
      * 是否手势操作过
      */
     private boolean isGestured;
+    private boolean isMoved;
     private int mMode;
 
     private int mPhotoTop;
@@ -108,6 +110,7 @@ public class CutoutView extends View {
      * 放大视图
      */
     private int mEnlargeSize;
+    private int mMinDistance;
     /**
      * 多点触控处理
      */
@@ -135,21 +138,22 @@ public class CutoutView extends View {
 
     public CutoutView(Context context) {
         super(context);
-        init();
+        init(context);
     }
 
     public CutoutView(Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
-        init();
+        init(context);
     }
 
     public CutoutView(Context context, @Nullable AttributeSet attrs, int defStyleAttr) {
         super(context, attrs, defStyleAttr);
-        init();
+        init(context);
     }
 
-    private void init() {
+    private void init(Context context) {
         setLayerType(View.LAYER_TYPE_SOFTWARE, null);
+        mMinDistance = ViewConfiguration.get(context).getScaledTouchSlop();
         mMatrix = new Matrix();
         mExchangedMatrix = new Matrix();
         mPhotoRectF = new RectF();
@@ -217,12 +221,11 @@ public class CutoutView extends View {
                 mTouchPoint = 1;
                 isEnlargeVisible = true;
                 isGestured = false;
+                isMoved = false;
+                mDownPoint[0] = event.getX();
+                mDownPoint[1] = event.getY();
 
-                if (mMode == Mode.CUT_OUT) {
-                    onCutoutDown(event);
-                } else {
-                    onEraserDown(event);
-                }
+
                 break;
             case MotionEvent.ACTION_POINTER_DOWN:
                 mTouchPoint += 1;
@@ -239,14 +242,34 @@ public class CutoutView extends View {
                 mMovePoint[0] = event.getX();
                 mMovePoint[1] = event.getY();
 
+                final int moveX = (int) Math.abs(mMovePoint[0] - mDownPoint[0]);
+                final int moveY = (int) Math.abs(mMovePoint[1] - mDownPoint[1]);
+
+                if (moveX < mMinDistance && moveY < mMinDistance) {
+                    return true;
+                }
+
+
                 if (mTouchPoint >= 2) {
                     onGestureMove(event);
                 } else if (!isGestured) { // 手势操作后不能进行其他操作
-                    if (mMode == Mode.CUT_OUT) {
-                        onCutoutMove(event);
+                    
+                    if (isMoved) {
+                        if (mMode == Mode.CUT_OUT) {
+                            onCutoutMove(event);
+                        } else {
+                            onEraserMove(event);
+                        }
                     } else {
-                        onEraserMove(event);
+                        if (mMode == Mode.CUT_OUT) {
+                            onCutoutDown(event);
+                        } else {
+                            onEraserDown(event);
+                        }
+                        isMoved = true;
                     }
+
+
                 }
 
                 break;
@@ -379,8 +402,7 @@ public class CutoutView extends View {
         mPathMeasure.setPath(mCurrentPath, false);
         // 如果之前是closed 就重置
         if (mPathMeasure.getLength() == 0 || mPathMeasure.isClosed()) {
-            mDownPoint[0] = event.getX();
-            mDownPoint[1] = event.getY();
+
 
             mCurrentPath.reset();
             mExchangedPath.reset();
