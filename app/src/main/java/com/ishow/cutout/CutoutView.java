@@ -253,7 +253,7 @@ public class CutoutView extends View {
                 if (mTouchPoint >= 2) {
                     onGestureMove(event);
                 } else if (!isGestured) { // 手势操作后不能进行其他操作
-                    
+
                     if (isMoved) {
                         if (mMode == Mode.CUT_OUT) {
                             onCutoutMove(event);
@@ -455,7 +455,11 @@ public class CutoutView extends View {
 
     @SuppressWarnings("UnusedParameters")
     private void onEraserUp(MotionEvent event) {
-        mCurrentRecord.addPath(mCurrentPath);
+        Matrix matrix = new Matrix();
+        mMatrix.invert(matrix);
+
+        mCurrentRecord.addEraserMatrix(matrix);
+        mCurrentRecord.addEraserPath(mCurrentPath);
         mCurrentPath = new Path();
         notifyCanBack();
     }
@@ -465,7 +469,6 @@ public class CutoutView extends View {
         final float pointOneY = event.getY(0);
         final float pointTwoX = event.getX(1);
         final float pointTwoY = event.getY(1);
-
 
         final float translateX = Math.min(pointOneX - mLastPointOne[0], pointTwoX - mLastPointTwo[0]);
         final float translateY = Math.min(pointOneY - mLastPointOne[1], pointTwoY - mLastPointTwo[1]);
@@ -614,16 +617,6 @@ public class CutoutView extends View {
         mZoomAnimator.start();
     }
 
-    private Bitmap getEraserResultBitmap() {
-        Bitmap bitmap = Bitmap.createBitmap(mPhotoBitmap.getWidth(), mPhotoBitmap.getHeight(), Bitmap.Config.ARGB_8888);
-        Canvas canvas = new Canvas(bitmap);
-        mPhotoPaint.setXfermode(null);
-        canvas.drawBitmap(mPhotoBitmap, 0, 0, mPhotoPaint);
-        mPhotoPaint.setXfermode(mEraserPorterMode);
-        canvas.drawBitmap(getEraserPathBitmap(), -mPhotoLeft, -mPhotoTop, mPhotoPaint);
-        mPhotoPaint.setXfermode(null);
-        return bitmap;
-    }
 
     private Bitmap getEnlargeResultBitmap() {
         Bitmap bitmap = Bitmap.createBitmap(mPhotoBitmap.getWidth(), mPhotoBitmap.getHeight(), Bitmap.Config.ARGB_8888);
@@ -656,6 +649,17 @@ public class CutoutView extends View {
     }
 
 
+    private Bitmap getEraserResultBitmap() {
+        Bitmap bitmap = Bitmap.createBitmap(mPhotoBitmap.getWidth(), mPhotoBitmap.getHeight(), Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(bitmap);
+        mPhotoPaint.setXfermode(null);
+        canvas.drawBitmap(mPhotoBitmap, 0, 0, mPhotoPaint);
+        mPhotoPaint.setXfermode(mEraserPorterMode);
+        canvas.drawBitmap(getEraserPathBitmap(), -mPhotoLeft, -mPhotoTop, mPhotoPaint);
+        mPhotoPaint.setXfermode(null);
+        return bitmap;
+    }
+
     private Bitmap getEraserPathBitmap() {
         mExchangedMatrix.reset();
         mMatrix.invert(mExchangedMatrix);
@@ -669,12 +673,18 @@ public class CutoutView extends View {
     }
 
 
-    private Bitmap getEraserPathBitmap(List<Path> pathList) {
+    private Bitmap getBackEraserPathBitmap(List<Path> pathList, List<Matrix> matrixList) {
         Bitmap bitmap = Bitmap.createBitmap(mPhotoBitmap.getWidth(), mPhotoBitmap.getHeight(), Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(bitmap);
-        canvas.translate(-mPhotoLeft, -mPhotoTop);
-        for (Path path : pathList) {
+        Matrix ma = new Matrix();
+        for (int i = 0; i < pathList.size(); i++) {
+            Path path = pathList.get(i);
+            Matrix matrix = matrixList.get(i);
+            canvas.save();
+            canvas.translate(-mPhotoLeft, -mPhotoTop);
+            canvas.concat(matrix);
             canvas.drawPath(path, mActionPaint);
+            canvas.restore();
         }
         return bitmap;
     }
@@ -840,11 +850,11 @@ public class CutoutView extends View {
             return;
         }
         List<Float> cutoutTrackList = mCurrentRecord.getCutoutTrackList();
-        List<Path> pathList = mCurrentRecord.getPathList();
+        List<Path> eraserPatList = mCurrentRecord.getEraserPathList();
         if (!cutoutTrackList.isEmpty()) {
             backCutoutAction(cutoutTrackList);
-        } else if (!pathList.isEmpty()) {
-            backPath(pathList);
+        } else if (!eraserPatList.isEmpty()) {
+            backEraserPath(eraserPatList, mCurrentRecord.getEraserMatrixList());
         } else if (!mCutoutRecordList.isEmpty()) {
             backRecord();
         }
@@ -865,29 +875,30 @@ public class CutoutView extends View {
             computePhotoInfo();
             notifyCanBack();
         }
-        List<Path> pathList = mCurrentRecord.getPathList();
+        List<Path> pathList = mCurrentRecord.getEraserPathList();
         if (!pathList.isEmpty()) {
             // 方法默认是回退一个的， 但是现在回退到record 的时候不需要回退这么多
             mActionPaint.setAlpha(255);
             pathList.add(new Path());
-            backPath(pathList);
+            backEraserPath(pathList, mCurrentRecord.getEraserMatrixList());
         }
 
         // 擦除的path 给画上去
         postInvalidate();
     }
 
-    private void backPath(List<Path> pathList) {
+    private void backEraserPath(List<Path> pathList, List<Matrix> matrixList) {
         final int size = pathList.size();
         recycleBitmap(mPhotoBitmap);
         mPhotoBitmap = BitmapFactory.decodeFile(mCurrentRecord.getImagePath());
         computePhotoInfo();
         if (size == 1) {
-            pathList.clear();
+            mCurrentRecord.clearEraserInfo();
             notifyCanBack();
         } else {
             pathList.remove(pathList.size() - 1);
-            Bitmap pathBitmap = getEraserPathBitmap(pathList);
+            matrixList.remove(matrixList.size() - 1);
+            Bitmap pathBitmap = getBackEraserPathBitmap(pathList, matrixList);
             Bitmap bitmap = Bitmap.createBitmap(mPhotoBitmap.getWidth(), mPhotoBitmap.getHeight(), Bitmap.Config.ARGB_8888);
             Canvas canvas = new Canvas(bitmap);
             mPhotoPaint.setXfermode(null);

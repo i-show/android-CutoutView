@@ -1,5 +1,6 @@
 package com.ishow.cutout;
 
+import android.graphics.Matrix;
 import android.graphics.Path;
 
 import java.util.ArrayList;
@@ -19,7 +20,8 @@ public class CutoutRecord {
     /**
      * 路径列表
      */
-    private List<Path> pathList;
+    private List<Path> eraserPathList;
+    private List<Matrix> eraserMatrixList;
     /**
      * 抠图的轨迹
      */
@@ -37,14 +39,24 @@ public class CutoutRecord {
     }
 
 
-    public void addPath(Path path) {
+    public void addEraserMatrix(Matrix matrix) {
+        if (matrix == null) {
+            return;
+        }
+        if (eraserMatrixList == null) {
+            eraserMatrixList = new ArrayList<>();
+        }
+        eraserMatrixList.add(matrix);
+    }
+
+    public void addEraserPath(Path path) {
         if (path == null) {
             return;
         }
-        if (pathList == null) {
-            pathList = new ArrayList<>();
+        if (eraserPathList == null) {
+            eraserPathList = new ArrayList<>();
         }
-        pathList.add(path);
+        eraserPathList.add(path);
     }
 
     public void addCutoutTrack(float length) {
@@ -55,11 +67,18 @@ public class CutoutRecord {
     }
 
 
-    public List<Path> getPathList() {
-        if (pathList == null) {
-            pathList = new ArrayList<>();
+    public List<Path> getEraserPathList() {
+        if (eraserPathList == null) {
+            eraserPathList = new ArrayList<>();
         }
-        return pathList;
+        return eraserPathList;
+    }
+
+    public List<Matrix> getEraserMatrixList() {
+        if (eraserMatrixList == null) {
+            eraserMatrixList = new ArrayList<>();
+        }
+        return eraserMatrixList;
     }
 
     public List<Float> getCutoutTrackList() {
@@ -76,10 +95,23 @@ public class CutoutRecord {
         cutoutTrackList.clear();
     }
 
+    public void clearEraserInfo() {
+        clearEraserMatrixList();
+        clearEraserPathList();
+    }
+
+    public void clearEraserMatrixList() {
+        getEraserMatrixList().clear();
+    }
+
+    public void clearEraserPathList() {
+        getEraserPathList().clear();
+    }
+
     /**
      * 是否有 记录
      */
     public boolean hasRecord() {
-        return !getPathList().isEmpty() || !getCutoutTrackList().isEmpty();
+        return !getEraserPathList().isEmpty() || !getCutoutTrackList().isEmpty();
     }
 }
